@@ -4,12 +4,12 @@ import {
   makeWASocket,
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
-  DisconnectReason
+  DisconnectReason,
 } from '@whiskeysockets/baileys';
 import P from 'pino';
 import 'dotenv/config';
-import { handleMessage } from './logic.js';
 import qrcode from 'qrcode';
+import { handleMessage } from './logic.js';
 
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('./auth_state');
@@ -25,31 +25,56 @@ async function startBot() {
 
   sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
-      console.log("📱 Генерирую QR-код...");
-      await qrcode.toFile("qr.png", qr);
-      console.log("✅ QR-код сохранён в qr.png");
+      console.log('📱 Генерирую QR-код...');
+      await qrcode.toFile('qr.png', qr);
+      console.log('✅ QR-код сохранён в qr.png');
+    }
+
+    if (connection === 'open') {
+      console.log('✅ Бот подключён к WhatsApp!');
+    }
+
+    if (connection === 'close') {
+      const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log('🔌 Соединение закрыто. Повторное подключение:', shouldReconnect);
+      if (shouldReconnect) startBot();
     }
   });
 
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    const msg = messages[0];
-    if (!msg?.message || msg.key.fromMe) return;
+  sock.ev.on('messages.upsert', async ({ messages }) => {
+    const m = messages[0];
+    if (!m.message || m.key.fromMe) return;
 
-    const from = msg.key.remoteJid;
-    const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
+    const from = m.key.remoteJid;
+    const msg =
+      m.message.conversation ||
+      m.message.extendedTextMessage?.text ||
+      m.message.imageMessage?.caption ||
+      '';
 
-    if (!text?.toLowerCase().includes("sofia")) return;
+    if (!msg || !from) return;
 
-    const cleanText = text.replace(/sofia/i, '').trim();
-    const [responseText, responseButtons] = await handleMessage(from, cleanText);
+    console.log(`📩 Сообщение от ${from}: ${msg}`);
 
-    await sock.sendMessage(from, {
-      text: responseText,
-      ...(responseButtons.length > 0 && {
-        buttons: responseButtons.map(b => ({ buttonId: b, buttonText: { displayText: b }, type: 1 })),
-        footer: '',
-      }),
-    });
+    try {
+      const [text, buttons] = await handleMessage(from, msg);
+
+      const message = {
+        text,
+        footer: 'The Beauty Salon 💆‍♀️',
+        ...(buttons.length > 0 && {
+          buttons: buttons.map((b, i) => ({
+            buttonId: `btn_${i + 1}`,
+            buttonText: { displayText: b },
+            type: 1,
+          })),
+        }),
+      };
+
+      await sock.sendMessage(from, message);
+    } catch (err) {
+      console.error('❌ Ошибка при обработке сообщения:', err);
+    }
   });
 }
 
