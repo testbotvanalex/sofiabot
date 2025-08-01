@@ -9,6 +9,7 @@ import {
 import P from 'pino';
 import 'dotenv/config';
 import { handleMessage } from './logic.js';
+import qrcode from 'qrcode';
 
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('./auth_state');
@@ -22,41 +23,34 @@ async function startBot() {
 
   sock.ev.on('creds.update', saveCreds);
 
-  sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
-    if (qr) console.log('📱 Сканируй QR-код для входа:\n', qr);
-    if (connection === 'close') {
-      const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      console.log('❌ Соединение закрыто. Переподключение?', shouldReconnect);
-      if (shouldReconnect) startBot();
-    } else if (connection === 'open') {
-      console.log('✅ WhatsApp подключён!');
+  sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+    if (qr) {
+      console.log("📱 Генерирую QR-код...");
+      await qrcode.toFile("qr.png", qr);
+      console.log("✅ QR-код сохранён в qr.png");
     }
   });
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
     const msg = messages[0];
-    if (!msg.message || msg.key.fromMe) return;
+    if (!msg?.message || msg.key.fromMe) return;
 
-    const sender = msg.key.remoteJid;
-    const text =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      msg.message?.buttonsResponseMessage?.selectedButtonId ||
-      '';
+    const from = msg.key.remoteJid;
+    const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
 
-    if (!text) return;
-    console.log(`📩 ${sender}: ${text}`);
+    if (!text?.toLowerCase().includes("sofia")) return;
 
-    const [reply, buttons] = await handleMessage(sender, text);
+    const cleanText = text.replace(/sofia/i, '').trim();
+    const [responseText, responseButtons] = await handleMessage(from, cleanText);
 
-    await sock.sendMessage(sender, { text: reply });
-    if (buttons.length > 0) {
-      const buttonText = buttons.map((b, i) => `${i + 1}. ${b}`).join('\n');
-      await sock.sendMessage(sender, { text: `\n${buttonText}` });
-    }
+    await sock.sendMessage(from, {
+      text: responseText,
+      ...(responseButtons.length > 0 && {
+        buttons: responseButtons.map(b => ({ buttonId: b, buttonText: { displayText: b }, type: 1 })),
+        footer: '',
+      }),
+    });
   });
 }
 
-startBot().catch((err) => console.error('Ошибка запуска бота:', err));
+startBot();
